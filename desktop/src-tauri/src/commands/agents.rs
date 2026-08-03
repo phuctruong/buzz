@@ -1270,6 +1270,69 @@ pub async fn stop_managed_agent(
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
+/// Retract a deleted agent's channel memberships from the relay.
+///
+/// Every agent instance is keyed by a freshly generated keypair
+/// (`Keys::generate()` in `create_managed_agent`), so re-creating an agent from
+/// the same persona mints a NEW pubkey. Deletion dropped the local record,
+/// released the keyring entry, tombstoned and archived the identity — but never
+/// retracted the agent's kind:39002 channel memberships, so the dead pubkey
+/// stayed a member of every channel it had joined.
+///
+/// The result is a "ghost": it carries the same display name as the live agent,
+/// shows up in channel rosters and member pickers, and can never answer because
+/// nothing is running that key. Ghosts accumulate one per delete/recreate cycle
+/// and are indistinguishable from the real agent in the UI.
+///
+/// Best-effort, matching the tombstone/archive contract: a relay hiccup must not
+/// fail a delete that has already succeeded locally.
+async fn retract_agent_channel_memberships(app: &AppHandle, agent_pubkey: &str) {
+    use tauri::Manager;
+
+    let state = app.state::<AppState>();
+
+    // kind:39002 is the per-channel member list, `#p` the members it names.
+    let events = match crate::relay::query_relay(
+        &state,
+        &[serde_json::json!({ "kinds": [39002], "#p": [agent_pubkey] })],
+    )
+    .await
+    {
+        Ok(events) => events,
+        Err(error) => {
+            eprintln!("buzz-desktop: agent-membership-retract: query failed: {error}");
+            return;
+        }
+    };
+
+    // The member list's `d` tag is the channel id it belongs to.
+    let mut channel_ids: Vec<uuid::Uuid> = Vec::new();
+    for event in &events {
+        for tag in event.tags.iter() {
+            let slice = tag.as_slice();
+            if slice.len() >= 2 && slice[0] == "d" {
+                if let Ok(id) = slice[1].parse::<uuid::Uuid>() {
+                    if !channel_ids.contains(&id) {
+                        channel_ids.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    for channel_id in channel_ids {
+        let outcome = match crate::events::build_remove_member(channel_id, agent_pubkey) {
+            Ok(builder) => crate::relay::submit_event(builder, &state)
+                .await
+                .map(|_| ()),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = outcome {
+            eprintln!("buzz-desktop: agent-membership-retract: {channel_id}: {error}");
+        }
+    }
+}
+
 // Async so the blocking body (disk reads/writes, process termination, keyring
 // delete, nest regeneration) runs off the main UI thread via spawn_blocking.
 #[tauri::command]
@@ -1279,6 +1342,8 @@ pub async fn delete_managed_agent(
     app: AppHandle,
 ) -> Result<(), String> {
     use tauri::Manager;
+    let retract_app = app.clone();
+    let retract_pubkey = pubkey.clone();
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
         {
@@ -1347,7 +1412,13 @@ pub async fn delete_managed_agent(
         Ok(())
     })
     .await
-    .map_err(|e| format!("spawn_blocking failed: {e}"))?
+    .map_err(|e| format!("spawn_blocking failed: {e}"))??;
+
+    // After the record is gone and the process is stopped: retract the dead
+    // pubkey's channel memberships so it stops appearing as a channel member.
+    // Async, so it cannot live inside the blocking store-lock section above.
+    retract_agent_channel_memberships(&retract_app, &retract_pubkey).await;
+    Ok(())
 }
 
 // Remote agent shutdown is handled entirely by the frontend:
