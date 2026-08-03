@@ -149,7 +149,10 @@ fmt-all: fmt desktop-tauri-fmt mobile-fmt
 fix-all: fmt desktop-tauri-fmt desktop-fix web-fix mobile-fix
 
 # Ensure sidecar placeholder binaries exist (Tauri validates externalBin at compile time)
-# Sidecar binary list must stay in sync with desktop-release-build below.
+# DEV/CHECK ONLY — these stubs are 0-byte and not runnable. Anything that
+# produces a distributable bundle must use scripts/bundle-sidecars.sh instead
+# (see desktop-release-build), or the installer ships empty sidecars.
+# Sidecar binary list must stay in sync with scripts/bundle-sidecars.sh.
 _ensure-sidecar-stubs:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -231,21 +234,26 @@ desktop-tauri-test-compiled-flags: _ensure-sidecar-stubs
     echo "Both compiled states verified."
 
 # Build the full desktop Tauri app locally (unsigned, for testing)
-# Sidecar binary list must stay in sync with _ensure-sidecar-stubs above.
 # pnpm install is unconditional here: release builds must start from a clean dep tree.
+#
+# This produces a DISTRIBUTABLE bundle, so it must ship REAL sidecars. The
+# 0-byte stubs from `_ensure-sidecar-stubs` only satisfy Tauri's compile-time
+# externalBin existence check — they are not runnable. A bundle built on stubs
+# installs empty files over /usr/bin/buzz-acp et al, and every managed-agent
+# spawn then dies at `resolve_command("buzz-acp")` right after writing its log
+# marker (agent "starts" with zero output; mentioning an agent blocks the send).
+# `bundle-sidecars.sh` copies the real release binaries and hard-fails if any
+# are missing, so a broken bundle can never be produced silently.
 desktop-release-build target="aarch64-apple-darwin":
     #!/usr/bin/env bash
     set -euo pipefail
     TARGET={{target}}
-    mkdir -p desktop/src-tauri/binaries
-    touch "desktop/src-tauri/binaries/buzz-acp-$TARGET"
-    touch "desktop/src-tauri/binaries/buzz-agent-$TARGET"
+    SIDECAR_CRATES=(-p buzz-acp -p buzz-agent -p buzz-dev-mcp -p git-credential-nostr -p buzz-cli)
     if [[ "$TARGET" != *windows* ]]; then
-        touch "desktop/src-tauri/binaries/buzz-backend-kubernetes-$TARGET"
+        SIDECAR_CRATES+=(-p buzz-backend-kubernetes)
     fi
-    touch "desktop/src-tauri/binaries/buzz-dev-mcp-$TARGET"
-    touch "desktop/src-tauri/binaries/git-credential-nostr-$TARGET"
-    touch "desktop/src-tauri/binaries/buzz-$TARGET"
+    cargo build --release --target "$TARGET" "${SIDECAR_CRATES[@]}"
+    ./scripts/bundle-sidecars.sh "$TARGET"
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
 
