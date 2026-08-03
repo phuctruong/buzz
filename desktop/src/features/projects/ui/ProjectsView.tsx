@@ -196,7 +196,13 @@ export function ProjectsView() {
               activitySummariesQuery.data?.[project.repoAddress],
             ),
           ),
-          ...(projectsWorkItemsQuery.data?.pullRequests.items.flatMap(
+          // Guard every hop, not just `data`. The `?? []` fallback shows the
+          // intent was "contribute nothing when absent", but `?.` stopped at
+          // `data` — so a payload that omits `pullRequests`/`issues`, or omits
+          // their `items`, threw `undefined is not an object (evaluating
+          // 'items.flatMap')` out of a `useMemo` and took the whole view down
+          // via the error boundary rather than rendering an empty list.
+          ...(projectsWorkItemsQuery.data?.pullRequests?.items?.flatMap(
             ({ pullRequest }) => [
               pullRequest.author,
               ...pullRequest.recipients,
@@ -206,11 +212,13 @@ export function ProjectsView() {
               ...pullRequest.comments.map((comment) => comment.author),
             ],
           ) ?? []),
-          ...(projectsWorkItemsQuery.data?.issues.items.flatMap(({ issue }) => [
-            issue.author,
-            ...issue.recipients,
-            ...issue.comments.map((comment) => comment.author),
-          ]) ?? []),
+          ...(projectsWorkItemsQuery.data?.issues?.items?.flatMap(
+            ({ issue }) => [
+              issue.author,
+              ...issue.recipients,
+              ...issue.comments.map((comment) => comment.author),
+            ],
+          ) ?? []),
         ].map(normalizePubkey),
       ),
     ],
