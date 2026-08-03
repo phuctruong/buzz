@@ -1314,3 +1314,31 @@ fn restart_eligible_false_when_orphan_has_no_drift() {
 fn restart_eligible_false_when_non_orphan_has_no_drift() {
     assert!(!super::restart_eligible(false, false, false));
 }
+
+// ── child log filter tests ──────────────────────────────────────────────
+
+/// The harness emits its message-lifecycle logging under explicit `target:`
+/// names, not under the `buzz_acp` crate path. A target directive only matches
+/// the target, so a filter of `buzz_acp=info` alone discards `pool::prompt`
+/// ("turn complete"), every `acp::*` event, and 12 error-level `pool` logs —
+/// which is what made a working agent and a wedged one look identical in the
+/// log file. Each root here must stay listed.
+#[test]
+fn child_log_targets_cover_harness_lifecycle_targets() {
+    for root in ["buzz_acp", "pool", "acp", "canvas", "engram", "observer"] {
+        assert!(
+            super::CHILD_LOG_TARGETS.contains(&format!("{root}=info")),
+            "CHILD_LOG_TARGETS lost the `{root}` target — \
+             harness lifecycle logs under `{root}::*` would go dark"
+        );
+    }
+}
+
+/// `info` is load-bearing, not incidental: it keeps the debug-only `acp::wire`
+/// firehose (19 statements) off while letting info/warn/error through. A bump
+/// to debug here would bury the signal it exists to expose.
+#[test]
+fn child_log_targets_stay_at_info_to_exclude_the_wire_firehose() {
+    assert!(!super::CHILD_LOG_TARGETS.contains("=debug"));
+    assert!(!super::CHILD_LOG_TARGETS.contains("=trace"));
+}

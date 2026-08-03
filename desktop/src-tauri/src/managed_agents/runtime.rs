@@ -957,11 +957,34 @@ pub fn spawn_agent_child(
     })
 }
 
+/// Log directives for a spawned harness child.
+///
+/// `buzz_acp=info` alone is NOT enough. Most of the harness's message-lifecycle
+/// logging is emitted under explicit `target:` names — `pool::prompt`,
+/// `acp::session`, `acp::tool`, `canvas::fetch`, `engram::core`, `observer` —
+/// and a target-based directive only matches the target, never the crate that
+/// emitted it. So `buzz_acp=info` silently discarded ~80 statements including
+/// `pool::prompt` "turn complete", every `acp::tool` call, and 12 error-level
+/// `pool` logs.
+///
+/// The visible consequence: an agent could accept a mention, run a full turn and
+/// post a reply while its log file stayed frozen at the startup banner — leaving
+/// no way to tell a working agent from a wedged one, and no trace at all for a
+/// message dropped by the author gate or the rule filter.
+///
+/// `info` is the right level for these targets: the debug-only firehose
+/// (`acp::wire`, 19 debug statements) stays off by construction, while the
+/// info/warn/error lifecycle events come through.
+const CHILD_LOG_TARGETS: &str =
+    "buzz_acp=info,pool=info,acp=info,canvas=info,engram=info,observer=info";
+
 fn child_rust_log_filter() -> String {
     match std::env::var("RUST_LOG") {
+        // An explicit operator directive wins untouched — including the choice
+        // to be quieter than the default.
         Ok(existing) if existing.contains("buzz_acp") => existing,
-        Ok(existing) if !existing.trim().is_empty() => format!("{existing},buzz_acp=info"),
-        _ => "buzz_acp=info".to_string(),
+        Ok(existing) if !existing.trim().is_empty() => format!("{existing},{CHILD_LOG_TARGETS}"),
+        _ => CHILD_LOG_TARGETS.to_string(),
     }
 }
 
